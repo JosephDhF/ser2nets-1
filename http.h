@@ -27,6 +27,26 @@
 #define HTTP_CONNECTED 2
 #define HTTP_CLOSING 3
 
+#ifdef WORDS_BIGENDIAN
+typedef struct ws_hdr_s {
+  unsigned char FIN:1;
+  unsigned char RSV1:1;
+  unsigned char RSV2:1;
+  unsigned char RSV3:1;
+  unsigned char opcode:4;
+  unsigned char MASK:1;
+  unsigned char length:7;
+} ws_hdr_t;
+
+typedef union ws_length_s {
+  unsigned int len64;
+  unsigned int len16:16;
+  struct {
+    unsigned char MASK:1;
+    unsigned char len7:7;
+  };
+} ws_length_t;
+#else
 typedef struct ws_hdr_s {
   unsigned char opcode:4;
   unsigned char RSV3:1;
@@ -42,12 +62,13 @@ typedef union ws_length_s {
   unsigned int len16:16;
   unsigned int len64;
 } ws_length_t;
+#endif
 
 typedef struct ws_pdu_s {
   ws_hdr_t *hdr;
   ws_length_t *len;
-  unsigned char *payload;
   unsigned char *mask;
+  unsigned char *payload;
   unsigned int index;
   unsigned int left;
   unsigned char buf[HTTP_BUFSIZE];
