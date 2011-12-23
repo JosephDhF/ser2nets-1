@@ -51,7 +51,7 @@
 #define WEBSOCKET_UNEXTENDED(frm) ((frm)->hdr->length < WEBSOCKET_EXT16_LENGTH)
 #define WEBSOCKET_EXT16(frm) (WEBSOCKET_EXT16_LENGTH == ((frm)->hdr->length & 0xFF))
 #define WEBSOCKET_EXT64(frm) (WEBSOCKET_EXT64_LENGTH == ((frm)->hdr->length & 0xFF))
-#define WEBSOCKET_LENGTH(frm) (WEBSOCKET_UNEXTENDED(frm) ? (frm)->len->len7 : (WEBSOCKET_EXT16(frm) ? ntohs((frm)->len->len16) : (frm)->len->len64))
+#define WEBSOCKET_LENGTH(frm) ((frm)->len ? (WEBSOCKET_UNEXTENDED(frm) ? (frm)->len->len7 : (WEBSOCKET_EXT16(frm) ? ntohs((frm)->len->len16) : (frm)->len->len64)) : (frm)->hdr->length)
 #define WEBSOCKET_MASKED(frm) (frm->hdr->MASK)
 #define WEBSOCKET_FRAME_SIZE(frm) WEBSOCKET_LENGTH(frm) + WEBSOCKET_HEADER_SIZE \
                                   + (WEBSOCKET_UNEXTENDED(frm) ? 0 : (WEBSOCKET_EXT16(frm) ? WEBSOCKET_EXT16_SIZE : WEBSOCKET_EXT64_SIZE)) \
@@ -198,10 +198,11 @@ static void
 ws_print_frame(ws_frame_t *frm)
 {
   int i;
+  unsigned char *hdr = frm->hdr;
   printf("FIN: %x, RSV1: %d, RSV2: %d, RSV3: %d, opcode: %d, MASK: %d, length: %d\n",
           frm->hdr->FIN, frm->hdr->RSV1, frm->hdr->RSV2, frm->hdr->RSV3,
           frm->hdr->opcode, frm->hdr->MASK, WEBSOCKET_LENGTH(frm));
-  if (WEBSOCKET_MASKED(frm)) {
+  if (WEBSOCKET_MASKED(frm) && frm->mask) {
     printf("mask key:");
     for (i = 0; i < WEBSOCKET_MASK_SIZE; i++) {
       printf(" %02x", frm->mask[i]);
@@ -210,6 +211,9 @@ ws_print_frame(ws_frame_t *frm)
   }
   if (frm->payload) {
     printf("payload: %s\n", frm->payload);
+  }
+  while (*hdr) {
+    printf("%02x ", *(hdr++));
   }
 }
 
@@ -298,23 +302,25 @@ http_init(http_data_t *hd, void *cb_data,
 }
 
 char *
-http_process_response(http_data_t *hd, int fd)
+http_process_response(http_data_t *hd, unsigned char *buf, int len)
 {
+  int count = 0;
+
+  if (hd->state != HTTP_CONNECTED)
+    return NULL;
+
   if (IS_WEBSOCKET(hd)){
     ws_frame_t ws_frame;
 
-    hd->response_buf_count = read(fd, hd->response_buf, HTTP_BUFSIZE);
-
     ws_init_frame(&ws_frame);
-    ws_set_payload_length(&ws_frame, hd->response_buf_count);
-    ws_append_payload(&ws_frame, hd->response_buf, hd->response_buf_count);
+    ws_set_payload_length(&ws_frame, len);
+    ws_append_payload(&ws_frame, buf, len);
 
     send_ws_frame(hd, &ws_frame);
   } else {
     /* http mode */
-    hd->response_buf_count = read(fd, hd->response_buf, HTTP_BUFSIZE);
     //printf("response: %d\n", hd->response_buf_count);
-    hd->handle_response(hd->cb_data, hd->response_buf, hd->response_buf_count);
+    hd->handle_response(hd->cb_data, buf, len);
   }
   return NULL;
 }
@@ -322,7 +328,7 @@ http_process_response(http_data_t *hd, int fd)
 char *
 http_process_request(http_data_t *hd, int fd)
 {
-  unsigned char *ret, *buf;
+  unsigned char *ret = NULL, *buf = NULL;
   char line[HTTP_BUFSIZE];
   int header_len;
   char header[64];

@@ -57,7 +57,7 @@ PROGRAMS = $(sbin_PROGRAMS)
 am_ser2net_OBJECTS = controller.$(OBJEXT) dataxfer.$(OBJEXT) \
 	devcfg.$(OBJEXT) readconfig.$(OBJEXT) selector.$(OBJEXT) \
 	ser2net.$(OBJEXT) utils.$(OBJEXT) telnet.$(OBJEXT) \
-	http.$(OBJEXT) sha1.$(OBJEXT)
+	http.$(OBJEXT) sha1.$(OBJEXT) list.$(OBJEXT)
 ser2net_OBJECTS = $(am_ser2net_OBJECTS)
 ser2net_LDADD = $(LDADD)
 DEFAULT_INCLUDES = -I. -I$(srcdir)
@@ -196,10 +196,10 @@ sysconfdir = @sysconfdir@
 target_alias = @target_alias@
 AM_CFLAGS = -Wall
 ser2net_SOURCES = controller.c dataxfer.c devcfg.c readconfig.c selector.c \
-	ser2net.c utils.c telnet.c http.c sha1.c
+	ser2net.c utils.c telnet.c http.c sha1.c list.c
 
 noinst_HEADERS = controller.h dataxfer.h devcfg.h readconfig.h selector.h \
-	utils.h telnet.h http.h sha1.h
+	utils.h telnet.h http.h sha1.h list.h
 
 man_MANS = ser2net.8
 EXTRA_DIST = $(man_MANS) ser2net.conf ser2net.spec ser2net.init
@@ -287,6 +287,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/telnet.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/http.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/sha1.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/list.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/utils.Po@am__quote@
 
 .c.o:

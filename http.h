@@ -20,6 +20,8 @@
 #ifndef __HTTP_H__
 #define __HTTP_H__
 
+#define D(format, ...) printf(format, __VA_ARGS__);
+
 #define HTTP_BUFSIZE    1024
 
 #define HTTP_UNCONNECTED 0
@@ -96,6 +98,6 @@ void http_init(http_data_t *hd, void *cb_data,
                int (*handle_request)(void *, unsigned char *, int),
                int (*handle_response)(void *, unsigned char *, int));
 char* http_process_request(http_data_t *hd, int fd);
-char* http_process_response(http_data_t *hd, int fd);
+char* http_process_response(http_data_t *hd, unsigned char *buf, int len);
 
 #endif /* __HTTP_H__ */
