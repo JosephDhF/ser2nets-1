@@ -20,8 +20,6 @@
 #ifndef __HTTP_H__
 #define __HTTP_H__
 
-#define D(format, ...) printf(format, __VA_ARGS__);
-
 #define HTTP_BUFSIZE    1024
 
 #define HTTP_UNCONNECTED 0

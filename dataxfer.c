@@ -85,7 +85,7 @@ char *enabled_str[] = { "off", "raw", "rawlp", "telnet", "rraw", "http" };
 #define PORT_BUFSIZE	1024
 
 #define PORT_IS_FREE(port) list_is_empty(port->tcp_list)
-#define PRINT_ADDRESS(addr, buf) inet_ntop(AF_INET, &(addr.sin_addr), buf, sizeof(buf));
+#define D(...) printf(__VA_ARGS__);
 
 struct port_info;
 
@@ -151,15 +151,6 @@ typedef struct port_info
 					   wait without any I/O before
 					   we shut the port down. */
 
-    int            timeout_left;	/* The amount of time left (in
-					   seconds) before the timeout
-					   goes off. */
-
-    sel_timer_t *timer;			/* Used to timeout when the no
-					   I/O has been seen for a
-					   certain period of time. */
-
-
     /* Information about the TCP port. */
     char               *portname;       /* The name given for the port. */
     struct sockaddr_in tcpport;		/* The TCP port to listen on
@@ -168,9 +159,6 @@ typedef struct port_info
     int            acceptfd;		/* The file descriptor used to
 					   accept connections on the
 					   TCP port. */
-    int            tcpfd;		/* When connected, the file
-                                           descriptor for the TCP
-                                           port used for I/O. */
     struct sockaddr_in remote;		/* The socket address of who
 					   is connected to this port. */
     unsigned int tcp_bytes_received;    /* Number of bytes read from the
@@ -412,7 +400,6 @@ init_port_data(port_info_t *port)
     port->portname = NULL;
     memset(&(port->tcpport), 0, sizeof(port->tcpport));
     port->acceptfd = -1;
-    port->tcpfd = -1;
     port->timeout = 0;
     port->next = NULL;
     port->new_config = NULL;
@@ -457,7 +444,14 @@ delete_tcp_to_dev_char(port_info_t *port, int pos)
 static void
 reset_timer(port_info_t *port)
 {
-    port->timeout_left = port->timeout;
+    list_node_t *node = port->tcp_list;
+    tcp_info_t *tcp;
+    while (node) {
+	tcp = (tcp_info_t *) node->data;
+	tcp->timeout = port->timeout;
+	tcp->timeout_left = tcp->timeout;
+	node = node->next;
+    }
 }
 
 static void
@@ -525,7 +519,7 @@ tcp_timeout(selector_t  *sel, sel_timer_t *timer, void *data)
 
     if (tcp->timeout) {
 	tcp->timeout_left--;
-        //D("timeout: %d, left: %d\n", tcp->timeout, tcp->timeout_left);
+	//D("timeout: %d, left: %d\n", tcp->timeout, tcp->timeout_left);
 	if (tcp->timeout_left < 0) {
 	    shutdown_port(port, tcp, "timeout");
 	    return;
@@ -564,28 +558,45 @@ tcp_reset_timer(tcp_info_t *tcp)
 }
 
 static tcp_info_t *
-tcp_new()
+tcp_new(int tcpfd)
 {
     tcp_info_t *tcp = (tcp_info_t *) malloc(sizeof(tcp_info_t));
     memset(tcp, 0, sizeof(tcp_info_t));
+    tcp->tcpfd = tcpfd;
     sel_alloc_timer(ser2net_sel, tcp_timeout, tcp, &tcp->timer);
     return tcp;
 }
 
+#define tcp_print_list tcp_print_list_impl
+//#define tcp_print_list
+
 static void
+tcp_print_list_impl(list_node_t *tcp_list)
+{
+    list_node_t *node = tcp_list;
+    D("[D] tcps:")
+    while (node) {
+	D(" %d", ((tcp_info_t *) node->data)->tcpfd)
+	node = node->next;
+    }
+    D("\n")
+}
+
+static int
 tcp_insert(port_info_t *port, tcp_info_t *tcp)
 {
     list_node_t *node = list_new_node(tcp);
-    if (node)   // TODO log if malloc failed
-	list_insert(&port->tcp_list, node, NULL);
+
+    if (!node)
+	return -1;
+
+    list_insert(&port->tcp_list, node, NULL);
     tcp->port = port;
     tcp->timeout = port->timeout;
 
-    node = port->tcp_list;
-    while (node) {
-	printf("--tcp: %d\n", ((tcp_info_t *)node->data)->tcpfd);
-	node = node->next;
-    }
+    tcp_print_list(port->tcp_list);
+
+    return 0;
 }
 
 static void
@@ -601,7 +612,7 @@ tcp_find_in_port(port_info_t *port, int fd)
     list_node_t *node = port->tcp_list;
     tcp_info_t *tcp;
     while (node) {
-	tcp = (tcp_info_t *)node->data;
+	tcp = (tcp_info_t *) node->data;
 	if (tcp->tcpfd == fd)
 	    return tcp;
 	node = node->next;
@@ -634,17 +645,38 @@ static void
 tcp_remove(port_info_t *port, tcp_info_t *tcp)
 {
     list_node_t *node = list_remove_data(&port->tcp_list, tcp, tcp_compare);
+    tcp_free(tcp);
     list_delete_node(node);
+
+    tcp_print_list(port->tcp_list);
+}
+
+static void
+tcp_shutdown(tcp_info_t *tcp, char *reason)
+{
+    D("tcp %d shutdown: %s\n", tcp->tcpfd, reason)
+    tcp_close(tcp);
+    tcp_remove(tcp->port, tcp);
+}
+
+static void
+tcp_shutdown_all(list_node_t *queue, char *reason)
+{
+    tcp_info_t *tcp = NULL;
+    if (!queue)
+	return;
+    tcp_shutdown_all(queue->next, reason);
+    tcp = (tcp_info_t *) queue->data;
+    D("tcp %d shutdown: %s\n", tcp->tcpfd, reason)
     tcp_close(tcp);
     tcp_free(tcp);
+    list_delete_node(queue);
 }
 
 static void
 tcp_set_fd_write_handler(tcp_info_t *tcp, int state)
 {
     port_info_t *port = tcp->port;
-
-    D("set tcp %d write state: %s\n", tcp->tcpfd, SEL_FD_HANDLER_ENABLED == state ? "enabled" : "disabled")
 
     sel_set_fd_write_handler(ser2net_sel, tcp->tcpfd, state);
     if (SEL_FD_HANDLER_ENABLED == state) {
@@ -671,13 +703,9 @@ tcp_set_fd_read_handler(port_info_t *port, int state)
     list_node_t *node = port->tcp_list;
     tcp_info_t *tcp = NULL;
 
-    D("set tcp read state: %s\n", SEL_FD_HANDLER_ENABLED == state ? "enabled" : "disabled")
-
     while (node) {
 	tcp = (tcp_info_t *)node->data;
-  //    sel_set_fd_read_handler(ser2net_sel, tcp->tcpfd, state);
 	tcp_reset_timer(tcp);
-	D("tcp %d read %s\n", tcp->tcpfd, SEL_FD_HANDLER_ENABLED == state ? "enabled" : "disabled")
 	node = node->next;
     }
 
@@ -757,23 +785,6 @@ static void
 handle_dev_fd_read(int fd, void *data)
 {
     port_info_t *port = (port_info_t *) data;
-//    int write_count;
-
-//    printf("handle_dev_fd_read\n");
-
-//    if (PORT_HTTP == port->enabled) {
-//      char *rv = http_process_response(&port->ht_data, fd);
-//      if (rv) {
-//        /* Got an error on the read, shut down the port. */
-//        shutdown_port(port, NULL, rv);
-//        return;
-//      }
-//      if (port->dev_to_tcp_buf_count > 0) {
-//        //printf("tcp_buf: %s\n", port->dev_to_tcp_buf);
-//        goto write_to_tcp;
-//      }
-//      return;
-//    }
 
     port->dev_to_tcp_buf_start = 0;
     if (port->enabled == PORT_TELNET) {
@@ -830,52 +841,6 @@ handle_dev_fd_read(int fd, void *data)
     }
 
     tcp_write(port, port->dev_to_tcp_buf, port->dev_to_tcp_buf_count);
-//
-// retry_write:
-//    write_count = write(port->tcpfd,
-//			port->dev_to_tcp_buf,
-//			port->dev_to_tcp_buf_count);
-//
-//    if (write_count == -1) {
-//	if (errno == EINTR) {
-//	    /* EINTR means we were interrupted, just retry. */
-//	    goto retry_write;
-//	}
-//
-//	if (errno == EAGAIN) {
-//	    /* This was due to O_NONBLOCK, we need to shut off the reader
-//	       and start the writer monitor. */
-//	    sel_set_fd_read_handler(ser2net_sel, port->devfd,
-//				    SEL_FD_HANDLER_DISABLED);
-//	    sel_set_fd_write_handler(ser2net_sel, port->tcpfd,
-//				     SEL_FD_HANDLER_ENABLED);
-//	    port->dev_to_tcp_state = PORT_WAITING_OUTPUT_CLEAR;
-//	} else if (errno == EPIPE) {
-//	    shutdown_port(port, tcp, "EPIPE");
-//	    return;
-//	} else {
-//	    /* Some other bad error. */
-//	    syslog(LOG_ERR, "The tcp write for port %s had error: %m",
-//		   port->portname);
-//	    shutdown_port(port, tcp, "tcp write error");
-//	    return;
-//	}
-//    } else {
-//	port->tcp_bytes_sent += write_count;
-//	port->dev_to_tcp_buf_count -= write_count;
-//	if (port->dev_to_tcp_buf_count != 0) {
-//	    /* We didn't write all the data, shut off the reader and
-//               start the write monitor. */
-//	    port->dev_to_tcp_buf_start += write_count;
-//	    sel_set_fd_read_handler(ser2net_sel, port->devfd,
-//				    SEL_FD_HANDLER_DISABLED);
-//	    sel_set_fd_write_handler(ser2net_sel, port->tcpfd,
-//				     SEL_FD_HANDLER_ENABLED);
-//	    port->dev_to_tcp_state = PORT_WAITING_OUTPUT_CLEAR;
-//	}
-//    }
-
-//    reset_timer(port);
 }
 
 /* The serial port has room to write some data.  This is only activated
@@ -914,16 +879,10 @@ handle_dev_fd_write(int fd, void *data)
 	    port->tcp_to_dev_buf_start += write_count;
 	} else {
 	    /* We are done writing, turn the reader back on. */
-//	    sel_set_fd_read_handler(ser2net_sel, port->tcpfd,
-//				    SEL_FD_HANDLER_ENABLED);
 	    tcp_set_fd_read_handler(port, SEL_FD_HANDLER_ENABLED);
-//	    sel_set_fd_write_handler(ser2net_sel, port->devfd,
-//				     SEL_FD_HANDLER_DISABLED);
 	    port->tcp_to_dev_state = PORT_WAITING_INPUT;
 	}
     }
-
-//    reset_timer(port);
 }
 
 /* Handle an exception from the serial port. */
@@ -947,8 +906,6 @@ handle_tcp_fd_read(int fd, void *data)
 
     tcp = tcp_find_in_port(port, fd);
 
-//    printf("handle_tcp_fd_read %d\n", tcp->tcpfd);
-
     if (PORT_HTTP == port->enabled) {
       char *rv = http_process_request(&tcp->ht_data, fd);
       if (rv) {
@@ -957,7 +914,6 @@ handle_tcp_fd_read(int fd, void *data)
         return;
       }
       if (port->tcp_to_dev_buf_count > 0) {
-        //printf("dev_buf: %s\n", port->tcp_to_dev_buf);
         goto write_to_dev;
       }
       return;
@@ -1030,11 +986,7 @@ write_to_dev:
 	if (errno == EAGAIN) {
 	    /* This was due to O_NONBLOCK, we need to shut off the reader
 	       and start the writer monitor. */
-//	    sel_set_fd_read_handler(ser2net_sel, port->tcpfd,
-//				    SEL_FD_HANDLER_DISABLED);
 	    tcp_set_fd_read_handler(port, SEL_FD_HANDLER_DISABLED);
-//	    sel_set_fd_write_handler(ser2net_sel, port->devfd,
-//				     SEL_FD_HANDLER_ENABLED);
 	    port->tcp_to_dev_state = PORT_WAITING_OUTPUT_CLEAR;
 	} else {
 	    /* Some other bad error. */
@@ -1050,16 +1002,10 @@ write_to_dev:
 	    /* We didn't write all the data, shut off the reader and
                start the write monitor. */
 	    port->tcp_to_dev_buf_start += write_count;
-//	    sel_set_fd_read_handler(ser2net_sel, port->tcpfd,
-//				    SEL_FD_HANDLER_DISABLED);
 	    tcp_set_fd_read_handler(port, SEL_FD_HANDLER_DISABLED);
-//	    sel_set_fd_write_handler(ser2net_sel, port->devfd,
-//				     SEL_FD_HANDLER_ENABLED);
 	    port->tcp_to_dev_state = PORT_WAITING_OUTPUT_CLEAR;
 	}
     }
-
-//    reset_timer(port);
 }
 
 /* The TCP port has room to write some data.  This is only activated
@@ -1077,16 +1023,6 @@ handle_tcp_fd_write(int fd, void *data)
     tcp = tcp_find_in_port(port, fd);
     hd = &tcp->ht_data;
     td = &tcp->tn_data;
-
-    //printf("tcp writing %d\n", port->dev_to_tcp_buf_count);
-//    if (PORT_HTTP == port->enabled) {
-//      char *rv = http_process_response(hd, fd);
-//      if (rv) {
-//        /* Got an error on the read, shut down the port. */
-//        shutdown_port(port, rv);
-//      }
-//      return;
-//    }
 
     if (td->out_telnet_cmd_size > 0) {
 	write_count = write(tcp->tcpfd,
@@ -1152,17 +1088,11 @@ handle_tcp_fd_write(int fd, void *data)
 	    /* We didn't write all the data, continue writing. */
 	    tcp->dev_to_tcp_buf_start += write_count;
 	} else if (PORT_HTTP == port->enabled && HTTP_CLOSING == hd->state) {
-//	  printf("state: %d", hd->state);
-//	  hd->state = HTTP_CONNECTED;
-	  hd->state = HTTP_UNCONNECTED;
-	  shutdown_port(port, tcp, "receive close frame");
-	  return;
+	    hd->state = HTTP_UNCONNECTED;
+	    shutdown_port(port, tcp, "receive close frame");
+	    return;
 	} else {
 	    /* We are done writing, turn the reader back on. */
-//	    sel_set_fd_read_handler(ser2net_sel, port->devfd,
-//				    SEL_FD_HANDLER_ENABLED);
-//	    sel_set_fd_write_handler(ser2net_sel, tcp->tcpfd,
-//				     SEL_FD_HANDLER_DISABLED);
 	    tcp_set_fd_write_handler(tcp, SEL_FD_HANDLER_DISABLED);
 	    port->dev_to_tcp_state = PORT_WAITING_INPUT;
 	}
@@ -1202,8 +1132,6 @@ telnet_output_ready(void *cb_data)
     port_info_t *port = tcp->port;
     sel_set_fd_read_handler(ser2net_sel, port->devfd,
 			    SEL_FD_HANDLER_DISABLED);
-    //sel_set_fd_write_handler(ser2net_sel, port->tcpfd,
-	//		     SEL_FD_HANDLER_ENABLED);
     tcp_set_fd_write_handler(tcp, SEL_FD_HANDLER_ENABLED);
 }
 
@@ -1211,11 +1139,13 @@ static void
 http_output_ready(void *cb_data)
 {
     tcp_info_t *tcp = (tcp_info_t *) cb_data;
-    //  port_info_t *port = tcp->port;
-    //  tcp_set_fd_read_handler(port, SEL_FD_HANDLER_ENABLED);
-    //  sel_set_fd_read_handler(ser2net_sel, port->devfd, SEL_FD_HANDLER_DISABLED);
-    //sel_set_fd_write_handler(ser2net_sel, tcp->tcpfd, SEL_FD_HANDLER_ENABLED);
-    tcp_set_fd_write_handler(tcp, SEL_FD_HANDLER_ENABLED);
+    if (tcp->ht_data.state == HTTP_CLOSING) {
+	/* if the http state is closing, we only enable the tcp writing,
+	 * but not disable dev reading. */
+	sel_set_fd_write_handler(ser2net_sel, tcp->tcpfd, SEL_FD_HANDLER_ENABLED);
+    } else {
+	tcp_set_fd_write_handler(tcp, SEL_FD_HANDLER_ENABLED);
+    }
 }
 
 static int
@@ -1820,6 +1750,7 @@ setup_tcp_port(port_info_t *port, tcp_info_t *tcp)
 
     /* we only initialize dev the first time we got a connection. */
     if (PORT_IS_FREE(port)) {
+
 #ifdef USE_UUCP_LOCKING
     {
 	int rv;
@@ -1904,6 +1835,8 @@ setup_tcp_port(port_info_t *port, tcp_info_t *tcp)
 			     : SEL_FD_HANDLER_ENABLED));
     sel_set_fd_except_handler(ser2net_sel, port->devfd,
 			      SEL_FD_HANDLER_ENABLED);
+
+    /* end of if (PORT_IS_FREE(port))*/
     }
 
     tcp->dev_to_tcp_state = PORT_WAITING_INPUT;
@@ -1919,7 +1852,11 @@ setup_tcp_port(port_info_t *port, tcp_info_t *tcp)
 			      SEL_FD_HANDLER_ENABLED);
     port->tcp_to_dev_state = PORT_WAITING_INPUT;
 
-    tcp_insert(port, tcp);
+    if (tcp_insert(port, tcp) == -1) {
+	close(tcp->tcpfd);
+	syslog(LOG_ERR, "Could not allocate list node data for port %s: %m", port->portname);
+	return -1;
+    }
 
     if (port->enabled == PORT_TELNET) {
 	telnet_init(&tcp->tn_data, tcp, telnet_output_ready,
@@ -1928,7 +1865,6 @@ setup_tcp_port(port_info_t *port, tcp_info_t *tcp)
 		    telnet_init_seq, sizeof(telnet_init_seq));
     } else if(PORT_HTTP == port->enabled) {
         sel_set_fd_read_handler(ser2net_sel, port->devfd, SEL_FD_HANDLER_DISABLED);
-//        sel_set_fd_write_handler(ser2net_sel, tcp->tcpfd, SEL_FD_HANDLER_ENABLED);
         http_init(&tcp->ht_data, tcp, http_output_ready, http_to_dev_buf, http_to_tcp_buf);
     } else {
 	sel_set_fd_read_handler(ser2net_sel, port->devfd,
@@ -1938,7 +1874,7 @@ setup_tcp_port(port_info_t *port, tcp_info_t *tcp)
     display_banner(port, tcp);
 
     if (PORT_IS_FREE(port)) {
-    setup_trace(port);
+	setup_trace(port);
     }
 
     tick_timer(tcp->timer);
@@ -1956,11 +1892,9 @@ handle_accept_port_read(int fd, void *data)
     socklen_t len;
     tcp_info_t *tcp;
     char *err = NULL;
-    char buf[128];
-
-    printf("accepting\n");
 
     if (port->tcp_to_dev_state != PORT_UNCONNECTED) {
+	/* we enable multi-connections now */
 	//err = "Port already in use\n\r";
     } else if (is_device_already_inuse(port)) {
 	err = "Port's device already in use\n\r";
@@ -1978,28 +1912,18 @@ handle_accept_port_read(int fd, void *data)
 	return;
     }
 
-    tcp = tcp_new();
+    tcp = tcp_new(-1);
     len = sizeof(tcp->remote);
     tcp->tcpfd = accept(fd, (struct sockaddr *) &(tcp->remote), &len);
     if (tcp->tcpfd == -1) {
-      syslog(LOG_ERR, "Could not accept on port %s: %m", port->portname);
-      return;
+	tcp_free(tcp);
+	syslog(LOG_ERR, "Could not accept on port %s: %m", port->portname);
+	return;
     }
 
-    PRINT_ADDRESS(tcp->remote, buf);
-    printf("accepted: %d %s\n", tcp->tcpfd, buf);
-
-    //list_insert(&port->tcp_list, tcp);
-
-//    len = sizeof(port->remote);
-//
-//    port->tcpfd = accept(fd, (struct sockaddr *) &(port->remote), &len);
-//    if (port->tcpfd == -1) {
-//	syslog(LOG_ERR, "Could not accept on port %s: %m", port->portname);
-//	return;
-//    }
-
-    setup_tcp_port(port, tcp);
+    if (setup_tcp_port(port, tcp) == -1) {
+	tcp_free(tcp);
+    }
 }
 
 /* Start monitoring for connections on a specific port. */
@@ -2017,10 +1941,11 @@ startup_port(port_info_t *port)
 	} else {
 	    tcp_info_t *tcp;
 	    port->acceptfd = -1;
-	    //port->tcpfd = 0; /* stdin */
-	    tcp = tcp_new();   /* stdin */
-	    if (setup_tcp_port(port, tcp) == -1)
+	    tcp = tcp_new(0);   /* stdin */
+	    if (setup_tcp_port(port, tcp) == -1) {
+		tcp_free(tcp);
 		exit(1);
+	    }
 	}
 	return NULL;
     }
@@ -2031,7 +1956,7 @@ startup_port(port_info_t *port)
     }
 
     if (PORT_REMOTE_RAW == port->enabled) {
-        tcp_info_t *tcp;
+	tcp_info_t *tcp;
 	if (connect(port->acceptfd, (struct sockaddr *) &port->tcpport, sizeof(port->tcpport)) == -1) {
 	    close(port->acceptfd);
 	    syslog(LOG_ERR, "Unable to connect to remote port: %m. Reconnect after %d seconds", port->restart_timeout);
@@ -2039,12 +1964,10 @@ startup_port(port_info_t *port)
 	    tick_timer(port->restart_timer);
 	    return NULL;
 	}
-//	port->tcpfd = port->acceptfd;
-//	memcpy(&port->remote, &port->tcpport, sizeof(port->remote));
-	tcp = tcp_new();
-	tcp->tcpfd = port->acceptfd;
+	tcp = tcp_new(port->acceptfd);
 	memcpy(&tcp->remote, &port->tcpport, sizeof(tcp->remote));
-	setup_tcp_port(port, tcp);
+	if (setup_tcp_port(port, tcp) == -1)
+	    tcp_free(tcp);
 	return NULL;
     }
 
@@ -2116,8 +2039,11 @@ change_port_state(port_info_t *port, int state)
 static void
 free_port(port_info_t *port)
 {
-    sel_free_timer(port->timer);
     change_port_state(port, PORT_DISABLED);
+    if (!PORT_IS_FREE(port)) {
+	tcp_shutdown_all(port->tcp_list, NULL);
+	port->tcp_list = NULL;
+    }
     if (port->portname != NULL) {
 	free(port->portname);
     }
@@ -2136,13 +2062,20 @@ free_port(port_info_t *port)
 static void
 shutdown_port(port_info_t *port, tcp_info_t *tcp, char *reason)
 {
-    D("tcp %d shutdown: %s\n", tcp->tcpfd, reason)
-
-    tcp_remove(port, tcp);
-    tcp = NULL;
+    if (tcp) {
+	/* shutdown tcp */
+	tcp_shutdown(tcp, reason);
+	tcp = NULL;
+    } else if (!PORT_IS_FREE(port)) {
+	/* shutdown all tcp */
+	tcp_shutdown_all(port->tcp_list, reason);
+	port->tcp_list = NULL;
+    }
 
     if (!PORT_IS_FREE(port))
 	return;
+
+    D("shutdown port %s\n", port->portname)
 
     if (port->wt_file != -1) {
 	close(port->wt_file);
@@ -2162,7 +2095,6 @@ shutdown_port(port_info_t *port, tcp_info_t *tcp, char *reason)
 	close(port->bt_file);
 	port->bt_file = -1;
     }
-    sel_stop_timer(port->timer);
     sel_clear_fd_handlers(ser2net_sel, port->devfd);
     /* To avoid blocking on close if we have written bytes and are in
        flow-control, we flush the output queue. */
@@ -2240,51 +2172,6 @@ shutdown_port(port_info_t *port, tcp_info_t *tcp, char *reason)
     }
 }
 
-void
-got_timeout(selector_t  *sel,
-	    sel_timer_t *timer,
-	    void        *data)
-{
-    port_info_t *port = (port_info_t *) data;
-    struct timeval then;
-    unsigned char modemstate;
-    int val;
-
-    if (port->timeout) {
-	port->timeout_left--;
-	if (port->timeout_left < 0) {
-	    shutdown_port(port, NULL, "timeout");
-	    return;
-	}
-    }
-
-    if (port->is_2217 && (ioctl(port->devfd, TIOCMGET, &val) != -1)) {
-	modemstate = 0;
-	if (val & TIOCM_CD)
-	    modemstate |= 0x80;
-	if (val & TIOCM_RI)
-	    modemstate |= 0x40;
-	if (val & TIOCM_DSR)
-	    modemstate |= 0x20;
-	if (val & TIOCM_CTS)
-	    modemstate |= 0x10;
-
-	modemstate &= port->modemstate_mask;
-	if (modemstate != port->last_modemstate) {
-	    unsigned char data[3];
-	    data[0] = TN_OPT_COM_PORT;
-	    data[1] = 107; /* Notify modemstate */
-	    data[2] = modemstate;
-	    port->last_modemstate = modemstate;
-//	    telnet_send_option(&port->tn_data, data, 3);
-	}
-    }
-    
-    gettimeofday(&then, NULL);
-    then.tv_sec += 1;
-    sel_start_timer(port->timer, &then);
-}
-
 static void
 got_restart_timeout(selector_t  *sel,
                     sel_timer_t *timer,
@@ -2322,16 +2209,9 @@ portconfig(char *portnum,
     }
 
     if (sel_alloc_timer(ser2net_sel,
-			got_timeout, new_port,
-			&new_port->timer))
-    {
-	free(new_port);
-	return "Could not allocate timer data";
-    }
-
-    if (sel_alloc_timer(ser2net_sel,
 			got_restart_timeout, new_port,
 			&new_port->restart_timer)) {
+	free(new_port);
 	return "Could not allocate timer data";
     }
 
@@ -2784,9 +2664,7 @@ setporttimeout(struct controller_info *cntlr, char *portspec, char *timeout)
 	    controller_output(cntlr, "\n\r", 2);
 	} else {
 	    port->timeout = timeout_num;
-	    if (port->tcpfd != -1) {
-		reset_timer(port);
-	    }
+	    reset_timer(port);
 	}
     }
 }

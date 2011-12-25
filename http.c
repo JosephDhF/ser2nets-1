@@ -29,6 +29,8 @@
 #include "http.h"
 #include "sha1.h"
 
+#define D(...) printf(__VA_ARGS__);
+
 #define IS_WEBSOCKET(hd) hd->websocket_key[0]
 
 #define WEBSOCKET_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -198,7 +200,7 @@ static void
 ws_print_frame(ws_frame_t *frm)
 {
   int i;
-  unsigned char *hdr = frm->hdr;
+  unsigned char *hdr = (unsigned char *) frm->hdr;
   printf("FIN: %x, RSV1: %d, RSV2: %d, RSV3: %d, opcode: %d, MASK: %d, length: %d\n",
           frm->hdr->FIN, frm->hdr->RSV1, frm->hdr->RSV2, frm->hdr->RSV3,
           frm->hdr->opcode, frm->hdr->MASK, WEBSOCKET_LENGTH(frm));
@@ -275,11 +277,10 @@ send_ws_close_frame(http_data_t *hd)
   ws_init_frame(&ws_frame);
   ws_frame.hdr->opcode = WEBSOCKET_OPCODE_CLOSE;
   ws_set_payload_length(&ws_frame, 2);
-  //ws_append_payload(&ws_frame, "me", 2);
   WEBSOCKET_SET_CLOSE_REASON(&ws_frame, 1000);
+  hd->state = HTTP_CLOSING;
   hd->output_ready(hd->cb_data);
   send_ws_frame(hd, &ws_frame);
-  hd->state = HTTP_CLOSING;
 }
 
 void
@@ -304,8 +305,6 @@ http_init(http_data_t *hd, void *cb_data,
 char *
 http_process_response(http_data_t *hd, unsigned char *buf, int len)
 {
-  int count = 0;
-
   if (hd->state != HTTP_CONNECTED)
     return NULL;
 
@@ -319,7 +318,6 @@ http_process_response(http_data_t *hd, unsigned char *buf, int len)
     send_ws_frame(hd, &ws_frame);
   } else {
     /* http mode */
-    //printf("response: %d\n", hd->response_buf_count);
     hd->handle_response(hd->cb_data, buf, len);
   }
   return NULL;
@@ -458,8 +456,9 @@ http_process_request(http_data_t *hd, int fd)
           if (frame->hdr->opcode == WEBSOCKET_OPCODE_CLOSE) {
             //printf("close reason: %d\n", WEBSOCKET_GET_CLOSE_REASON(frame));
             send_ws_close_frame(hd);
+          } else {
+            hd->handle_request(hd->cb_data, frame->payload, WEBSOCKET_LENGTH(frame));
           }
-          hd->handle_request(hd->cb_data, frame->payload, WEBSOCKET_LENGTH(frame));
           ws_init_frame(frame);
         }
       }
@@ -476,14 +475,6 @@ http_process_request(http_data_t *hd, int fd)
     hd->request_buf[i] = buf[i];
   }
   hd->request_buf[hd->request_buf_start] = '\0';
-
-//  memcpy(line, buf, hd->request_buf_start);
-//  memcpy(hd->request_buf, line, hd->request_buf_start);
-//  hd->request_buf[hd->request_buf_start] = '\0';
-
-//  if (HTTP_CONNECTED == hd->state) {
-//    printf("%s\n", hd->request_buf);
-//  }
 
   return NULL;
 }
