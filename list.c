@@ -89,7 +89,7 @@ list_remove_data(list_node_t **queue, void *data, int (*compare)(void *, void *)
 
   if (q) {
     if (NULL == p)
-      *queue = NULL;
+      *queue = q->next;
     else {
       p->next = q->next;
       q->next = NULL;
