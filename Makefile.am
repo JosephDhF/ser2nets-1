@@ -1,4 +1,4 @@
-sbin_PROGRAMS = ser2net
+sbin_PROGRAMS = ser2nets
 AM_CFLAGS=-Wall
 ser2net_SOURCES = controller.c dataxfer.c devcfg.c readconfig.c selector.c \
 	ser2net.c utils.c telnet.c http.c sha1.c list.c

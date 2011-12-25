@@ -37,7 +37,7 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
-sbin_PROGRAMS = ser2net$(EXEEXT)
+sbin_PROGRAMS = ser2nets$(EXEEXT)
 DIST_COMMON = README $(am__configure_deps) $(noinst_HEADERS) \
 	$(srcdir)/Makefile.am $(srcdir)/Makefile.in \
 	$(top_srcdir)/configure AUTHORS COPYING ChangeLog INSTALL NEWS \
@@ -268,8 +268,8 @@ clean-sbinPROGRAMS:
 	  echo " rm -f $$p $$f"; \
 	  rm -f $$p $$f ; \
 	done
-ser2net$(EXEEXT): $(ser2net_OBJECTS) $(ser2net_DEPENDENCIES) 
-	@rm -f ser2net$(EXEEXT)
+ser2nets$(EXEEXT): $(ser2net_OBJECTS) $(ser2net_DEPENDENCIES) 
+	@rm -f ser2nets$(EXEEXT)
 	$(LINK) $(ser2net_LDFLAGS) $(ser2net_OBJECTS) $(ser2net_LDADD) $(LIBS)
 
 mostlyclean-compile:
