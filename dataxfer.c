@@ -85,7 +85,7 @@ char *enabled_str[] = { "off", "raw", "rawlp", "telnet", "rraw", "http" };
 #define PORT_BUFSIZE	1024
 
 #define PORT_IS_FREE(port) list_is_empty(port->tcp_list)
-#define D(...) printf(__VA_ARGS__);
+#define D(...) //printf(__VA_ARGS__);
 
 struct port_info;
 
