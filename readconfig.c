@@ -300,7 +300,16 @@ handle_config_line(char *inbuf)
 	return;
     }
 
-    state = strtok_r(NULL, ":", &strtok_data);
+    if (strtok_data[0] == '\'')
+    {
+        // device name string may contains char ':'
+        // eg. '/dev/serial/by-path/pci-0000:00:1d.1-usb-0:2.1:1.0-port0'
+        devname = strtok_r(NULL, "'", &strtok_data);
+    }
+    else
+    {
+        devname = strtok_r(NULL, ":", &strtok_data);
+    }
     if (state == NULL) {
 	syslog(LOG_ERR, "No state given on line %d", lineno);
 	return;
