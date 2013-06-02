@@ -771,3 +771,14 @@ controller_init(char *controller_port)
     sel_set_fd_read_handler(ser2net_sel, acceptfd, SEL_FD_HANDLER_ENABLED);
     return 0;
 }
+
+void
+controller_shutdown(void)
+{
+    if (acceptfd == -1)
+	return;
+    sel_clear_fd_handlers(ser2net_sel, acceptfd);
+    close(acceptfd);
+    acceptfd = -1;
+}
+
